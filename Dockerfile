@@ -25,6 +25,6 @@ RUN npm ci --only=production && npm cache clean --force
 COPY --from=build /usr/src/app/dist ./dist
 COPY --from=build /usr/src/app/prisma ./prisma
 
-EXPOSE 80
+EXPOSE 8000
 
 CMD ["npm", "run", "start:prod"]
