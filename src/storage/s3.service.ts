@@ -9,12 +9,27 @@ import { extname } from 'path';
 import { randomUUID } from 'crypto';
 import { hasS3Config, parseBooleanEnv } from '../config/env';
 
+function parseBucketConfig(raw: string): { bucket: string; prefix: string } {
+  const normalized = raw.replace(/^\/+|\/+$/g, '');
+  const slashIndex = normalized.indexOf('/');
+
+  if (slashIndex === -1) {
+    return { bucket: normalized, prefix: '' };
+  }
+
+  return {
+    bucket: normalized.slice(0, slashIndex),
+    prefix: normalized.slice(slashIndex + 1).replace(/^\/+|\/+$/g, ''),
+  };
+}
+
 @Injectable()
 export class S3Service implements OnModuleInit {
   private readonly logger = new Logger(S3Service.name);
   private client: S3Client | null = null;
   private available = false;
   private bucket = '';
+  private prefix = '';
   private endpoint = '';
   private performDelete = false;
 
@@ -30,7 +45,9 @@ export class S3Service implements OnModuleInit {
       return;
     }
 
-    this.bucket = process.env.S3_BUCKET_NAME!;
+    const parsed = parseBucketConfig(process.env.S3_BUCKET_NAME!);
+    this.bucket = parsed.bucket;
+    this.prefix = parsed.prefix;
     this.endpoint = process.env.S3_ENDPOINT!.replace(/\/$/, '');
     this.performDelete = parseBooleanEnv(process.env.S3_PERFORM_DELETE);
     const region = process.env.S3_SERVICE_NAME || 'us-east-1';
@@ -48,7 +65,10 @@ export class S3Service implements OnModuleInit {
     try {
       await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }));
       this.available = true;
-      this.logger.log(`S3 connection established (bucket: ${this.bucket})`);
+      const location = this.prefix
+        ? `${this.bucket}/${this.prefix}`
+        : this.bucket;
+      this.logger.log(`S3 connection established (bucket: ${location})`);
     } catch (error) {
       this.available = false;
       const message = error instanceof Error ? error.message : String(error);
@@ -68,7 +88,10 @@ export class S3Service implements OnModuleInit {
 
     const extension =
       extname(file.originalname) || this.extensionFromMime(file.mimetype);
-    const imageKey = `users/${userId}/${randomUUID()}${extension}`;
+    const relativeKey = `users/${userId}/${randomUUID()}${extension}`;
+    const imageKey = this.prefix
+      ? `${this.prefix}/${relativeKey}`
+      : relativeKey;
 
     await this.client.send(
       new PutObjectCommand({
