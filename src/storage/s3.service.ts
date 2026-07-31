@@ -1,5 +1,6 @@
 import {
   DeleteObjectCommand,
+  GetObjectCommand,
   HeadBucketCommand,
   ListObjectsV2Command,
   PutObjectCommand,
@@ -8,7 +9,14 @@ import {
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { extname } from 'path';
 import { randomUUID } from 'crypto';
+import { Readable } from 'stream';
 import { resolveS3Config, type S3RuntimeConfig } from '../config/s3-config';
+
+export type S3ObjectPayload = {
+  body: Readable | Buffer;
+  contentType: string;
+  contentLength?: number;
+};
 
 @Injectable()
 export class S3Service implements OnModuleInit {
@@ -98,7 +106,36 @@ export class S3Service implements OnModuleInit {
 
     return {
       imageKey,
-      imageUrl: this.buildPublicUrl(imageKey),
+      // Private gateways are not browser-readable; API proxies the object.
+      imageUrl: `/api/users/${userId}/image`,
+    };
+  }
+
+  async getObject(imageKey: string): Promise<S3ObjectPayload> {
+    if (!this.client || !this.available || !this.config) {
+      throw new Error('S3 is not available');
+    }
+
+    const result = await this.client.send(
+      new GetObjectCommand({
+        Bucket: this.config.bucket,
+        Key: imageKey,
+      }),
+    );
+
+    if (!result.Body) {
+      throw new Error(`S3 object "${imageKey}" has no body`);
+    }
+
+    const body =
+      result.Body instanceof Readable
+        ? result.Body
+        : Buffer.from(await result.Body.transformToByteArray());
+
+    return {
+      body,
+      contentType: result.ContentType || 'application/octet-stream',
+      contentLength: result.ContentLength,
     };
   }
 
@@ -148,28 +185,6 @@ export class S3Service implements OnModuleInit {
       this.logger.debug(
         `HeadBucket failed but ListObjects succeeded (${message})`,
       );
-    }
-  }
-
-  private buildPublicUrl(imageKey: string): string {
-    if (!this.config) {
-      return imageKey;
-    }
-
-    const encodedKey = imageKey
-      .split('/')
-      .map((part) => encodeURIComponent(part))
-      .join('/');
-
-    if (this.config.forcePathStyle) {
-      return `${this.config.endpoint}/${this.config.bucket}/${encodedKey}`;
-    }
-
-    try {
-      const url = new URL(this.config.endpoint);
-      return `${url.protocol}//${this.config.bucket}.${url.host}/${encodedKey}`;
-    } catch {
-      return `${this.config.endpoint}/${this.config.bucket}/${encodedKey}`;
     }
   }
 

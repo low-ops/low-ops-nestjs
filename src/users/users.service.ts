@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { User as PrismaUser } from '@prisma/client';
 import { randomUUID } from 'crypto';
+import { Readable } from 'stream';
 import { PrismaService } from '../prisma/prisma.service';
 import { S3Service } from '../storage/s3.service';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -14,6 +15,12 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { User } from './entities/user.entity';
 
 type MemoryUser = User & { imageKey: string | null };
+
+export type UserImagePayload = {
+  body: Readable | Buffer;
+  contentType: string;
+  contentLength?: number;
+};
 
 @Injectable()
 export class UsersService implements OnModuleInit {
@@ -161,6 +168,22 @@ export class UsersService implements OnModuleInit {
     return this.toUser(user);
   }
 
+  async getImage(id: string): Promise<UserImagePayload> {
+    if (this.prisma.isAvailable()) {
+      const user = await this.ensureDbUser(id);
+      if (user.imageKey && this.s3.isAvailable()) {
+        return this.s3.getObject(user.imageKey);
+      }
+      return this.payloadFromDataUrl(user.imageUrl);
+    }
+
+    const user = this.findMemoryUser(id);
+    if (user.imageKey && this.s3.isAvailable()) {
+      return this.s3.getObject(user.imageKey);
+    }
+    return this.payloadFromDataUrl(user.imageUrl);
+  }
+
   async remove(id: string): Promise<User> {
     if (this.prisma.isAvailable()) {
       const existing = await this.ensureDbUser(id);
@@ -198,6 +221,24 @@ export class UsersService implements OnModuleInit {
     };
   }
 
+  private payloadFromDataUrl(imageUrl: string | null): UserImagePayload {
+    if (!imageUrl?.startsWith('data:')) {
+      throw new NotFoundException('User image not found');
+    }
+
+    const match = /^data:([^;]+);base64,(.+)$/.exec(imageUrl);
+    if (!match) {
+      throw new NotFoundException('User image not found');
+    }
+
+    const body = Buffer.from(match[2], 'base64');
+    return {
+      body,
+      contentType: match[1],
+      contentLength: body.length,
+    };
+  }
+
   private async ensureDbUser(id: string): Promise<PrismaUser> {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) {
@@ -226,11 +267,17 @@ export class UsersService implements OnModuleInit {
         ? user.updatedAt.toISOString()
         : user.updatedAt;
 
+    const imageKey =
+      'imageKey' in user ? (user.imageKey ?? null) : null;
+    const imageUrl = imageKey
+      ? `/api/users/${user.id}/image?v=${encodeURIComponent(updatedAt)}`
+      : (user.imageUrl ?? null);
+
     return {
       id: user.id,
       name: user.name,
       email: user.email,
-      imageUrl: user.imageUrl ?? null,
+      imageUrl,
       createdAt,
       updatedAt,
     };
