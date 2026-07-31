@@ -1,3 +1,5 @@
+export { hasS3Config, parseBooleanEnv } from './s3-config';
+
 const PLACEHOLDER_DATABASE_URL =
   'postgresql://local:local@127.0.0.1:5432/local?schema=public';
 
@@ -43,20 +45,4 @@ export function ensureDatabaseUrl(): boolean {
 
 export function isDatabaseConfigured(): boolean {
   return databaseConfigured;
-}
-
-export function parseBooleanEnv(value: string | undefined): boolean {
-  if (!value) {
-    return false;
-  }
-  return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
-}
-
-export function hasS3Config(): boolean {
-  return Boolean(
-    process.env.S3_ACCESS_KEY_ID &&
-    process.env.S3_SECRET_ACCESS_KEY &&
-    process.env.S3_BUCKET_NAME &&
-    process.env.S3_ENDPOINT,
-  );
 }

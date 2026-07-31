@@ -1,76 +1,70 @@
 import {
   DeleteObjectCommand,
   HeadBucketCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { extname } from 'path';
 import { randomUUID } from 'crypto';
-import { hasS3Config, parseBooleanEnv } from '../config/env';
-
-function parseBucketConfig(raw: string): { bucket: string; prefix: string } {
-  const normalized = raw.replace(/^\/+|\/+$/g, '');
-  const slashIndex = normalized.indexOf('/');
-
-  if (slashIndex === -1) {
-    return { bucket: normalized, prefix: '' };
-  }
-
-  return {
-    bucket: normalized.slice(0, slashIndex),
-    prefix: normalized.slice(slashIndex + 1).replace(/^\/+|\/+$/g, ''),
-  };
-}
+import { resolveS3Config, type S3RuntimeConfig } from '../config/s3-config';
 
 @Injectable()
 export class S3Service implements OnModuleInit {
   private readonly logger = new Logger(S3Service.name);
   private client: S3Client | null = null;
   private available = false;
-  private bucket = '';
-  private prefix = '';
-  private endpoint = '';
-  private performDelete = false;
+  private config: S3RuntimeConfig | null = null;
 
   isAvailable(): boolean {
     return this.available;
   }
 
   async onModuleInit(): Promise<void> {
-    if (!hasS3Config()) {
+    const config = resolveS3Config();
+
+    if (!config) {
+      const serviceName = process.env.S3_SERVICE_NAME?.trim();
+      if (
+        serviceName?.startsWith('com.mendix.storage.') &&
+        serviceName !== 'com.mendix.storage.s3'
+      ) {
+        this.logger.warn(
+          `Storage service "${serviceName}" is not S3. Image uploads will use local in-memory storage.`,
+        );
+        return;
+      }
+
       this.logger.warn(
         'S3 is not configured (S3_* env vars missing). Image uploads will use local in-memory storage.',
       );
       return;
     }
 
-    const parsed = parseBucketConfig(process.env.S3_BUCKET_NAME!);
-    this.bucket = parsed.bucket;
-    this.prefix = parsed.prefix;
-    this.endpoint = process.env.S3_ENDPOINT!.replace(/\/$/, '');
-    this.performDelete = parseBooleanEnv(process.env.S3_PERFORM_DELETE);
-    const region = process.env.S3_SERVICE_NAME || 'us-east-1';
-
+    this.config = config;
     this.client = new S3Client({
-      region,
-      endpoint: this.endpoint,
-      forcePathStyle: true,
+      region: config.region,
+      endpoint: config.endpoint,
+      forcePathStyle: config.forcePathStyle,
       credentials: {
-        accessKeyId: process.env.S3_ACCESS_KEY_ID!,
-        secretAccessKey: process.env.S3_SECRET_ACCESS_KEY!,
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
       },
     });
 
     try {
-      await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }));
+      await this.verifyConnection(config);
       this.available = true;
-      const location = this.prefix
-        ? `${this.bucket}/${this.prefix}`
-        : this.bucket;
-      this.logger.log(`S3 connection established (bucket: ${location})`);
+      const location = config.prefix
+        ? `${config.bucket}/${config.prefix}`
+        : config.bucket;
+      this.logger.log(
+        `S3 connection established (bucket: ${location}, region: ${config.region})`,
+      );
     } catch (error) {
       this.available = false;
+      this.client = null;
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(
         `S3 connection failed. Image uploads will use local in-memory storage. Reason: ${message}`,
@@ -82,20 +76,20 @@ export class S3Service implements OnModuleInit {
     userId: string,
     file: Express.Multer.File,
   ): Promise<{ imageUrl: string; imageKey: string }> {
-    if (!this.client || !this.available) {
+    if (!this.client || !this.available || !this.config) {
       throw new Error('S3 is not available');
     }
 
     const extension =
       extname(file.originalname) || this.extensionFromMime(file.mimetype);
     const relativeKey = `users/${userId}/${randomUUID()}${extension}`;
-    const imageKey = this.prefix
-      ? `${this.prefix}/${relativeKey}`
+    const imageKey = this.config.prefix
+      ? `${this.config.prefix}/${relativeKey}`
       : relativeKey;
 
     await this.client.send(
       new PutObjectCommand({
-        Bucket: this.bucket,
+        Bucket: this.config.bucket,
         Key: imageKey,
         Body: file.buffer,
         ContentType: file.mimetype,
@@ -104,25 +98,78 @@ export class S3Service implements OnModuleInit {
 
     return {
       imageKey,
-      imageUrl: `${this.endpoint}/${this.bucket}/${imageKey}`,
+      imageUrl: this.buildPublicUrl(imageKey),
     };
   }
 
   async deleteObject(imageKey: string | null | undefined): Promise<void> {
-    if (!imageKey || !this.client || !this.available || !this.performDelete) {
+    if (
+      !imageKey ||
+      !this.client ||
+      !this.available ||
+      !this.config?.performDelete
+    ) {
       return;
     }
 
     try {
       await this.client.send(
         new DeleteObjectCommand({
-          Bucket: this.bucket,
+          Bucket: this.config.bucket,
           Key: imageKey,
         }),
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`Failed to delete S3 object "${imageKey}": ${message}`);
+    }
+  }
+
+  private async verifyConnection(config: S3RuntimeConfig): Promise<void> {
+    if (!this.client) {
+      throw new Error('S3 client was not created');
+    }
+
+    try {
+      await this.client.send(new HeadBucketCommand({ Bucket: config.bucket }));
+      return;
+    } catch (headError) {
+      // Some S3-compatible providers deny HeadBucket but allow list/put.
+      await this.client.send(
+        new ListObjectsV2Command({
+          Bucket: config.bucket,
+          Prefix: config.prefix ? `${config.prefix}/` : undefined,
+          MaxKeys: 1,
+        }),
+      );
+
+      const message =
+        headError instanceof Error ? headError.message : String(headError);
+      this.logger.debug(
+        `HeadBucket failed but ListObjects succeeded (${message})`,
+      );
+    }
+  }
+
+  private buildPublicUrl(imageKey: string): string {
+    if (!this.config) {
+      return imageKey;
+    }
+
+    const encodedKey = imageKey
+      .split('/')
+      .map((part) => encodeURIComponent(part))
+      .join('/');
+
+    if (this.config.forcePathStyle) {
+      return `${this.config.endpoint}/${this.config.bucket}/${encodedKey}`;
+    }
+
+    try {
+      const url = new URL(this.config.endpoint);
+      return `${url.protocol}//${this.config.bucket}.${url.host}/${encodedKey}`;
+    } catch {
+      return `${this.config.endpoint}/${this.config.bucket}/${encodedKey}`;
     }
   }
 
