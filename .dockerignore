@@ -1,0 +1,17 @@
+node_modules
+frontend/node_modules
+frontend/dist
+dist
+coverage
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.md
+.vscode
+.idea
+.DS_Store
+npm-debug.log*
+Dockerfile*
+docker-compose*.yml
