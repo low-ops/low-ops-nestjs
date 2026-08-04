@@ -50,7 +50,7 @@ export class UsersController {
       return new StreamableFile(image.body);
     }
 
-    return new StreamableFile(image.body as Readable);
+    return new StreamableFile(image.body);
   }
 
   @Get(':id')

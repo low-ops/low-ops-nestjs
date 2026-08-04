@@ -19,7 +19,10 @@ export function parseBooleanEnv(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
 }
 
-export function parseBucketConfig(raw: string): { bucket: string; prefix: string } {
+export function parseBucketConfig(raw: string): {
+  bucket: string;
+  prefix: string;
+} {
   const normalized = raw.replace(/^\/+|\/+$/g, '');
   const slashIndex = normalized.indexOf('/');
 
@@ -109,9 +112,9 @@ export function hasS3Config(): boolean {
 
   return Boolean(
     process.env.S3_ACCESS_KEY_ID &&
-      process.env.S3_SECRET_ACCESS_KEY &&
-      process.env.S3_BUCKET_NAME &&
-      process.env.S3_ENDPOINT,
+    process.env.S3_SECRET_ACCESS_KEY &&
+    process.env.S3_BUCKET_NAME &&
+    process.env.S3_ENDPOINT,
   );
 }
 
@@ -123,8 +126,7 @@ export function resolveS3Config(): S3RuntimeConfig | null {
   const endpoint = normalizeEndpoint(process.env.S3_ENDPOINT!);
   const { bucket, prefix } = parseBucketConfig(process.env.S3_BUCKET_NAME!);
   const region = resolveS3Region(endpoint);
-  // Custom / S3-compatible endpoints need path-style addressing.
-  const forcePathStyle = !endpoint.includes('amazonaws.com');
+  const forcePathStyle = true;
 
   return {
     accessKeyId: process.env.S3_ACCESS_KEY_ID!,

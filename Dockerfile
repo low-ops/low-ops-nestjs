@@ -26,6 +26,7 @@ WORKDIR /usr/src/app
 
 ENV NODE_ENV=production
 ENV PORT=8000
+ENV METRICS_PORT=8001
 
 COPY package.json package-lock.json ./
 COPY prisma ./prisma
@@ -39,6 +40,6 @@ RUN chmod +x /usr/src/app/docker/entrypoint.sh \
 COPY --from=build /usr/src/app/dist ./dist
 COPY --from=build /usr/src/app/frontend/dist ./frontend/dist
 
-EXPOSE 8000
+EXPOSE 8000 8001
 
 ENTRYPOINT ["/usr/src/app/docker/entrypoint.sh"]

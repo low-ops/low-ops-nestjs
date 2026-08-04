@@ -267,8 +267,7 @@ export class UsersService implements OnModuleInit {
         ? user.updatedAt.toISOString()
         : user.updatedAt;
 
-    const imageKey =
-      'imageKey' in user ? (user.imageKey ?? null) : null;
+    const imageKey = 'imageKey' in user ? (user.imageKey ?? null) : null;
     const imageUrl = imageKey
       ? `/api/users/${user.id}/image?v=${encodeURIComponent(updatedAt)}`
       : (user.imageUrl ?? null);
